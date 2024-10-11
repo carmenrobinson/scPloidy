@@ -1,0 +1,198 @@
+---
+title: "Identify Copy Number Variations (CNVs) in cancer cells"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{CNV}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+
+has_pkg = requireNamespace("dplyr", quietly = TRUE) &&
+  requireNamespace("tidyr", quietly = TRUE) &&
+  requireNamespace("gplots", quietly = TRUE)
+knitr::opts_chunk$set(eval = has_pkg)
+```
+
+Analyze snATAC-seq data of liver (Project 461, Martinez Lab).
+
+```{r}
+library(scPloidy)
+library(dplyr)
+library(tidyr)
+library(gplots)
+library(Signac)
+library(Seurat)
+library(EnsDb.Mmusculus.v79)
+library(ggplot2)
+library(patchwork)
+library(hdf5r)
+```
+
+##Signac preprocessing
+```{r}
+counts <- Read10X_h5("Partek_ATAC_KOs_22L008026_S1_filtered_peak_bc_matrix.h5")
+metadata <- read.csv(
+  file = "Partek_ATAC_KOs_22L008026_S1_singlecell.csv",
+  header = TRUE,
+  row.names = 1
+)
+
+liver_assay <- CreateChromatinAssay(
+  counts = counts,
+  sep = c(":", "-"),
+  genome = "mm10",
+  fragments = 'Partek_ATAC_KOs_22L008026_S1_fragments.tsv.gz',
+  min.cells = 1
+)
+```
+
+
+```{r}
+liver <- CreateSeuratObject(
+  counts = liver_assay,
+  assay = 'peaks',
+  project = 'ATAC',
+  meta.data = metadata
+)
+```
+
+
+
+```{r}
+# extract gene annotations from EnsDb
+annotations <- GetGRangesFromEnsDb(ensdb = EnsDb.Mmusculus.v79)
+
+# change to UCSC style since the data was mapped to hg19
+seqlevels(annotations) <- paste0('chr', seqlevels(annotations))
+genome(annotations) <- "mm10"
+
+# add the gene information to the object
+Annotation(liver) <- annotations
+```
+
+#Change annotations to match UCSC
+
+
+```{r}
+# Extract gene annotations from EnsDb
+annotations <- GetGRangesFromEnsDb(ensdb = EnsDb.Mmusculus.v79)
+print(annotations)
+
+```
+```{r}
+
+# Convert the annotations to match the sequence levels of the assay
+seqlevelsStyle(annotations) <- "UCSC" # Change to UCSC style (e.g., chr1, chr2)
+genome(annotations) <- "mm10"
+
+# Ensure that the sequence levels match between the assay and annotations
+seqlevels(annotations) <- seqlevels(liver_assay)
+
+# Add the gene information to the object
+Annotation(liver) <- annotations
+```
+
+```{r}
+# Proceed with the rest of your analysis
+liver <- TSSEnrichment(liver)
+liver$pct_reads_in_peaks <- liver$peak_region_fragments / liver$passed_filters * 100
+liver$blacklist_ratio <- liver$blacklist_region_fragments / liver$peak_region_fragments
+
+VlnPlot(
+  object = liver,
+  features = c('pct_reads_in_peaks', 'peak_region_fragments',
+               'TSS.enrichment', 'blacklist_ratio', 'nucleosome_signal'),
+  pt.size = 0.1,
+  ncol = 5
+)
+```
+
+
+##CNV
+
+Infer CNVs.
+
+```{r}
+levels = c(2, 4)
+result = cnv(SU008_Tumor_Pre_fragmentoverlap,
+             SU008_Tumor_Pre_windowcovariates,
+             levels = levels,
+             deltaBICthreshold = -600)
+```
+
+Attach the result to `fragmentoverlap`.
+
+```{r}
+windowcovariates = SU008_Tumor_Pre_windowcovariates
+windowcovariates$w =
+  as.numeric(sub("window_", "", windowcovariates$window))
+
+fragmentoverlap = SU008_Tumor_Pre_fragmentoverlap
+fragmentoverlap$cell =
+  sub(".window.*", "", fragmentoverlap$barcode)
+fragmentoverlap$window =
+  sub(".*window", "window", fragmentoverlap$barcode)
+fragmentoverlap$w =
+  as.numeric(sub("window_", "", fragmentoverlap$window))
+
+x = match(fragmentoverlap$barcode,
+        result$cellwindowCN$barcode)
+fragmentoverlap$CN = result$cellwindowCN$CN[x]
+fragmentoverlap$ploidy.moment.cell = result$cellwindowCN$ploidy.moment.cell[x]
+fragmentoverlap = fragmentoverlap[!is.na(fragmentoverlap$CN), ]
+
+# For better hierarchical clustering
+fragmentoverlap$pwindownormalizedcleanedceiled =
+  pmin(fragmentoverlap$CN, min(levels) * 2)
+```
+
+Make dataframe for plotting.
+
+```{r}
+dataplot =
+  fragmentoverlap %>%
+  dplyr::select("w", "cell", "pwindownormalizedcleanedceiled") %>%
+  tidyr::pivot_wider(names_from = "w", values_from = "pwindownormalizedcleanedceiled")
+dataplot = as.data.frame(dataplot)
+rownames(dataplot) = dataplot$cell
+dataplot = dataplot[, colnames(dataplot) != "cell"]
+dataplot = as.matrix(dataplot)
+n = max(as.numeric(colnames(dataplot)))
+dataplot = dataplot[, match(as.character(1:n), colnames(dataplot))]
+colnames(dataplot) = as.character(1:n)
+```
+
+Plot.
+
+```{r, eval = FALSE}
+breaks = c(0, min(levels) - 1, min(levels) + 1, min(levels) * 2)
+
+x = windowcovariates
+x$chr[duplicated(windowcovariates$chr)] = NA
+x = x$chr[match(colnames(dataplot), x$w)]
+
+RowSideColors =
+  unlist(
+    lapply(
+      fragmentoverlap$ploidy.moment.cell[
+        match(rownames(dataplot), fragmentoverlap$cell)],
+      function (x) { which(sort(levels) == x)}))
+RowSideColors = topo.colors(length(levels))[RowSideColors]
+
+gplots::heatmap.2(
+  dataplot,
+  Colv = FALSE,
+  dendrogram = "none",
+  breaks = breaks,
+  col = c("blue", "gray80", "red"),
+  trace = "none", labRow = FALSE, na.color = "white",
+  labCol = x,
+  RowSideColors= RowSideColors)
+```
+

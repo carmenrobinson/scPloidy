@@ -38,12 +38,17 @@ https://www.ncbi.nlm.nih.gov/geo/download/?acc=GSE129785&format=file&file=GSE129
 Download GSM3722064_SU008_Tumor_Pre_fragments.tsv.gz from
 https://www.ncbi.nlm.nih.gov/geo/download/?acc=GSM3722064&format=file&file=GSM3722064%5FSU008%5FTumor%5FPre%5Ffragments%2Etsv%2Egz
 
+-> Partek_ATAC_KOs_22L008026_S1_fragments.tsv.gz
+
 ## Prepare windows and peaks
 
 The input window file `window.hg37.20MB.bed` and
 resultant peak file `multi_tissue_peaks.hg37.20MB.bed`
 can be downloaded from
 https://doi.org/10.6084/m9.figshare.23574066
+
+
+-> Partek_ATAC_KOs_22L008026_S1_peaks.bed
 
 To reproduce by yourself,
 download chromatin accessibility DHS_Index_and_Vocabulary_hg19_WM20190703.txt.gz from
